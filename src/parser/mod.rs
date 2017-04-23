@@ -5,6 +5,37 @@ use token::TokenType::*;
 use intermediate::*;
 use module::*;
 
+/*
+ * This macro generates nodes using imaginary
+ * tokens (not created in the scanner, but in the
+ * parser) to help us differentiate terminals in the
+ * backend.
+ */
+macro_rules! gen_imag_node {
+    ($text:expr, $token_type:expr, $line_num:expr,
+     $line_pos:expr) => (
+        Node::new(Token::new_imag($text.to_string(),
+                                  $token_type,
+                                  $line_num, $line_pos));
+    );
+}
+
+/*
+ * This macro generates a code block for adding
+ * the current underlying token onto the root node
+ * and adding a single expression as a child.
+ */
+macro_rules! generic_block {
+    ($self:expr) => (
+        let mut node = Node::new($self.current.clone());
+        $self.next_token();
+
+        node.add_child($self.expr());
+        
+        return node;
+    );
+}
+
 pub struct Parser<'a> {
     scanner: &'a mut Scanner<'a>,
     module: &'a Module,
@@ -148,10 +179,9 @@ impl<'a> Parser<'a>
 
     pub fn program(&mut self) -> Box<Node>
     {
-        let mut program = Node::new(Token::new_imag("BLOCK".to_string(),
-                                                     BLOCK,
-                                                     self.current.line_num,
-                                                     self.current.line_pos));
+        let mut program = gen_imag_node!("BLOCK", BLOCK,
+                                          self.current.line_num,
+                                          self.current.line_pos);
         self.skip_newlines();
         while self.peek_current() != EOF {
             if self.peek_current() == DEF && self.peek_next() != LPAREN {
@@ -171,6 +201,7 @@ impl<'a> Parser<'a>
             IF => self.if_statement(),
             WHILE | UNTIL => self.control_statement(),
             FOR    => self.for_statement(),
+            SWITCH => self.switch_statement(),
             IMPORT => self.import_statement(),
             DEBUG  => self.debug_statement(),
             RETURN => self.return_statement(),
@@ -190,10 +221,9 @@ impl<'a> Parser<'a>
         self.next_token();
 
         if !is_literal {
-            node = Node::new(Token::new_imag("SUB_DECL".to_string(),
-                                              SUB_DECL,
-                                              self.current.line_num,
-                                              self.current.line_pos));
+            node = gen_imag_node!("SUB_DECL", SUB_DECL,
+                                   self.current.line_num,
+                                   self.current.line_pos);
             if self.peek_current() != IDENT {
                 self.error("expected identifier");
             }
@@ -201,18 +231,16 @@ impl<'a> Parser<'a>
             self.next_token();
         }
         else {
-            node = Node::new(Token::new_imag("SUB_LITERAL".to_string(),
-                                              SUB_LITERAL,
-                                              self.current.line_num,
-                                              self.current.line_pos));
+            node = gen_imag_node!("SUB_LITERAL", SUB_LITERAL,
+                                   self.current.line_num,
+                                   self.current.line_pos);
         }
         self.match_and_skip_newlines(LPAREN,
                                      "expected '(' to open parameter list");
 
-        let mut params = Node::new(Token::new_imag("SUB_PARAMS".to_string(),
-                                                    SUB_PARAMS,
-                                                    self.current.line_num,
-                                                    self.current.line_pos));
+        let mut params = gen_imag_node!("SUB_PARAMS", SUB_PARAMS,
+                                         self.current.line_num,
+                                         self.current.line_pos);
         for n in self.parameter_list() {
             params.add_child(n);
         }
@@ -257,10 +285,9 @@ impl<'a> Parser<'a>
         node.add_child(self.expr());
         node.add_child(self.block());
 
-        let mut elif_root = Node::new(Token::new_imag("ELIF".to_string(),
-                                                       ELIF,
-                                                       self.current.line_num,
-                                                       self.current.line_pos));
+        let mut elif_root = gen_imag_node!("ELIF", ELIF,
+                                            self.current.line_num,
+                                            self.current.line_pos);
         while self.peek_current() == ELIF {
             self.next_token();
 
@@ -304,13 +331,86 @@ impl<'a> Parser<'a>
         return node;
     }
 
-    fn import_statement(&mut self) -> Box<Node>
+    fn switch_statement(&mut self) -> Box<Node>
     {
         let mut node = Node::new(self.current.clone());
         self.next_token();
+
         node.add_child(self.expr());
 
+        self.skip_newlines();
+        self.match_and_skip_newlines(LBRACE, "expected '{' to \
+                                     open switch block");
+
+        let mut token_type = self.peek_current();
+        while token_type != RBRACE && token_type != EOF {
+            node.add_child(self.branch());
+
+            token_type = self.peek_current(); 
+        }
+        self.__match(RBRACE, "expected '}' to close switch block");
+
         return node;
+    }
+
+    fn branch(&mut self) -> Box<Node>
+    {
+        self.skip_newlines();
+
+        if self.peek_current() == DEFAULT {
+            self.next_token();
+            return self.branch_block();
+        }
+        self.__match(CASE, "expected 'case'");
+        let mut branch_node = gen_imag_node!("SWITCH_BRANCH",
+                                              SWITCH_BRANCH,
+                                              self.current.line_num,
+                                              self.current.line_pos);
+        let mut constants_node = gen_imag_node!("SWITCH_EXPRS",
+                                                 SWITCH_EXPRS,
+                                                 self.current.line_num,
+                                                 self.current.line_pos);
+        self.constant_list(&mut constants_node);
+        
+        branch_node.add_child(constants_node);
+        branch_node.add_child(self.branch_block());
+
+        return branch_node;
+    }
+
+    fn constant_list(&mut self, node: &mut Box<Node>)
+    {
+        loop {
+            node.add_child(self.expr());
+            if self.peek_current() != COMMA {
+                break;
+            }
+            self.next_and_skip_newlines();
+        }
+    }
+
+    fn branch_block(&mut self) -> Box<Node>
+    {
+        self.match_line("expected newline before branch block");
+
+        let mut node = gen_imag_node!("BLOCK", BLOCK,
+                                       self.current.line_num,
+                                       self.current.line_pos);
+        let mut token_type = self.peek_current();
+        while token_type != CASE && token_type != DEFAULT &&
+              token_type != RBRACE && token_type != EOF
+        {
+            node.add_child(self.statement());
+            self.block_trailer();
+
+            token_type = self.peek_current();
+        }
+        return node;
+    }
+
+    fn import_statement(&mut self) -> Box<Node>
+    {
+        generic_block!(self);
     }
 
     fn debug_statement(&mut self) -> Box<Node>
@@ -322,11 +422,7 @@ impl<'a> Parser<'a>
          * will be replaced by some builtin subroutines in later
          * stages.
          */
-        let mut node = Node::new(self.current.clone());
-        self.next_token();
-        node.add_child(self.expr());
-
-        return node;
+        generic_block!(self);
     }
 
     fn return_statement(&mut self) -> Box<Node>
@@ -358,10 +454,9 @@ impl<'a> Parser<'a>
         self.skip_newlines();
         self.__match(LBRACE, "expected '{' to open block");
 
-        let mut node = Node::new(Token::new_imag("BLOCK".to_string(),
-                                                  BLOCK,
-                                                  self.current.line_num,
-                                                  self.current.line_pos));
+        let mut node = gen_imag_node!("BLOCK", BLOCK,
+                                       self.current.line_num,
+                                       self.current.line_pos);
         self.skip_newlines();
         while self.peek_current() != RBRACE &&
               self.peek_current() != EOF {
@@ -624,10 +719,9 @@ impl<'a> Parser<'a>
 
     fn subscript(&mut self, left: Box<Node>) -> Box<Node>
     {
-        let mut node = Node::new(Token::new_imag("SUBSCRIPT".to_string(),
-                                                  SUBSCRIPT,
-                                                  self.current.line_num,
-                                                  self.current.line_pos));
+        let mut node = gen_imag_node!("SUBSCRIPT", SUBSCRIPT,
+                                       self.current.line_num,
+                                       self.current.line_pos);
         node = left.get_root(node);
         
         self.next_and_skip_newlines();
@@ -641,10 +735,9 @@ impl<'a> Parser<'a>
 
     fn call_literal(&mut self, left: Box<Node>) -> Box<Node>
     {
-        let mut node = Node::new(Token::new_imag("CALL".to_string(),
-                                                  CALL,
-                                                  self.current.line_num,
-                                                  self.current.line_pos));
+        let mut node = gen_imag_node!("CALL", CALL,
+                                       self.current.line_num,
+                                       self.current.line_pos);
         node = left.get_root(node);
         self.next_and_skip_newlines();
 
@@ -659,10 +752,10 @@ impl<'a> Parser<'a>
 
     fn array_literal(&mut self) -> Box<Node>
     {
-        let mut node = Node::new(Token::new_imag("ARRAY_DECL".to_string(),
-                                                  ARRAY_DECL,
-                                                  self.current.line_num,
-                                                  self.current.line_pos));
+        let mut node = gen_imag_node!("ARRAY_DECL",
+                                       ARRAY_DECL,
+                                       self.current.line_num,
+                                       self.current.line_pos);
         self.next_and_skip_newlines();
         for n in self.expression_list(RBRACK) {
             node.add_child(n);
@@ -675,10 +768,9 @@ impl<'a> Parser<'a>
 
     fn hash_literal(&mut self) -> Box<Node>
     {
-        let mut node = Node::new(Token::new_imag("HASH_DECL".to_string(),
-                                                  HASH_DECL,
-                                                  self.current.line_num,
-                                                  self.current.line_pos));
+        let mut node = gen_imag_node!("HASH_DECL", HASH_DECL,
+                                       self.current.line_num,
+                                       self.current.line_pos);
         self.next_and_skip_newlines();
         if self.peek_current() == RBRACE {
             self.next_token();
@@ -686,10 +778,9 @@ impl<'a> Parser<'a>
             return node;
         }
         loop {
-            let mut elem = Node::new(Token::new_imag("HASH_ELEM".to_string(),
-                                                      HASH_ELEM,
-                                                      self.current.line_num,
-                                                      self.current.line_pos));
+            let mut elem = gen_imag_node!("HASH_ELEM", HASH_ELEM,
+                                           self.current.line_num,
+                                           self.current.line_pos);
             elem.add_child(self.expr());
             self.__match(ASSIGN_ARROW, "expected '=>'");
             elem.add_child(self.expr());

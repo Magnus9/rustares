@@ -32,6 +32,9 @@ pub enum TokenType {
     FOR,
     WHILE,
     UNTIL,
+    SWITCH,
+    CASE,
+    DEFAULT,
     IN,
     IMPORT,
     DEBUG,
@@ -96,6 +99,8 @@ pub enum TokenType {
     SUBSCRIPT,
     // MINUS is changed into NEGATE on parsing time.
     NEGATE,
+    SWITCH_BRANCH,
+    SWITCH_EXPRS,
 
     EOF,
 }

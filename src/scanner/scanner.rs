@@ -59,6 +59,9 @@ impl<'a> Scanner<'a>
                 "for"    => FOR,
                 "while"  => WHILE,
                 "until"  => UNTIL,
+                "switch" => SWITCH,
+                "case"   => CASE,
+                "default"=> DEFAULT,
                 "in"     => IN,
                 "import" => IMPORT,
                 "true"   => TRUE,
@@ -99,10 +102,8 @@ impl<'a> Scanner<'a>
             self.ch = self.get_char(self.position as usize);
             if self.ch == '\n' {
                 self.line_num += 1;
-                self.line_pos = 0;
-            } else {
-                self.line_pos += 1;
             }
+            self.line_pos += 1;
         }
         return self.ch;
     }
@@ -356,7 +357,10 @@ impl<'a> Scanner<'a>
                 '}'  => token.token_type = RBRACE,
                 ','  => token.token_type = COMMA,
                 ';'  => token.token_type = SEMICOLON,
-                '\n' => token.token_type = NEWLINE,
+                '\n' => {
+                    token.token_type = NEWLINE;
+                    token.line_num -= 1; self.line_pos = 0;
+                },
                 _    => self.error(self.line_num, self.line_pos,
                                    format!("unrecognized character '{}'",
                                    self.ch)),
@@ -426,7 +430,7 @@ impl<'a> Scanner<'a>
         let position = self.position;
 
         self.next_charx(2);
-        while self.is_hexdigit() {
+        while self.read_hexdigit() != 1 {
             self.next_char();
         }
         token.text = get_literal!(self.program, position,
@@ -441,6 +445,27 @@ impl<'a> Scanner<'a>
         token.value = IntegerValue(value.unwrap());
     }
 
+    pub fn read_hex_escape(&mut self, delimit: char) -> char
+    {
+        let mut value = 0;
+
+        for _ in 0..2 {
+            self.next_char();
+            if self.ch == delimit || self.ch == EOF_CHAR {
+                self.error(self.line_num, self.line_pos,
+                           "incomplete hex escape sequence".to_string());
+            }
+            let digit = self.read_hexdigit();
+
+            if digit == -1 {
+                self.error(self.line_num, self.line_pos,
+                           "incomplete hex escape sequence".to_string());
+            }
+            value = (value * 16) + digit;
+        }
+        return value as u8 as char;
+    }
+
     pub fn string_token(&mut self, token: &mut Token)
     {
         let mut buf = String::new();
@@ -451,12 +476,13 @@ impl<'a> Scanner<'a>
             if self.ch == '\\' {
                 self.next_char();
                 match self.ch {
-                    '"'  => { buf.push('"'); ; },
-                    '\\' => { buf.push('\\'); ; },
-                    '\'' => { buf.push('\''); ; },
-                    'n'  => { buf.push('\n'); ; },
-                    'r'  => { buf.push('\r'); ; },
-                    't'  => { buf.push('\t'); ; },
+                    '"'  => buf.push('"'),
+                    '\\' => buf.push('\\'),
+                    '\'' => buf.push('\''),
+                    'n'  => buf.push('\n'),
+                    'r'  => buf.push('\r'),
+                    't'  => buf.push('\t'),
+                    'x'  => buf.push(self.read_hex_escape(delimit)),
                     _    => self.error(self.line_num, self.line_pos,
                                        format!("invalid escape character {}",
                                                self.ch)),
@@ -496,18 +522,18 @@ impl<'a> Scanner<'a>
                next_char == 'X';
     }
 
-    fn is_hexdigit(&self) -> bool
+    fn read_hexdigit(&self) -> i32
     {
         if self.ch >= '0' && self.ch <= '9' {
-            return true;
+            return self.ch as i32 - '0' as i32;
         }
-        if self.ch >= 'a' && self.ch <= 'z' {
-            return true;
+        if self.ch >= 'a' && self.ch <= 'f' {
+            return self.ch as i32 - 'a' as i32 + 10;
         }
-        if self.ch >= 'A' && self.ch <= 'Z' {
-            return true;
+        if self.ch >= 'A' && self.ch <= 'F' {
+            return self.ch as i32 - 'A' as i32 + 10;
         }
-        return false;
+        return -1;
     }
 
     fn is_long_comment(&self) -> bool
